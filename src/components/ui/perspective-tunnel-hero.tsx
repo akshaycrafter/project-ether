@@ -190,6 +190,87 @@ export default function PerspectiveTunnelHero() {
         return () => el.removeEventListener("wheel", handleWheel);
     }, [rawProgress]);
 
+    // Touch driver: phones never dispatch wheel events, so without this the
+    // tunnel above would stay frozen at progress 0 on touch devices and the
+    // cards would never appear. It mirrors the wheel handler — vertical
+    // swipes integrate into the same rawProgress (own speed factor, same
+    // clamp) — so the corridor is driven by trackpad, wheel and finger alike.
+    // Once the tunnel is finished, the surplus of the same swipe is handed to
+    // normal page scroll, so the user is never stuck on the hero; swiping
+    // back down at the top rewinds the tunnel, exactly like wheeling up.
+    useEffect(() => {
+        const el = containerRef.current;
+        if (!el) return;
+
+        // Lets the preventDefault below actually stop native scroll on touch.
+        el.style.touchAction = "none";
+
+        let startX = 0;
+        let startY = 0;
+        let startProgress = 0;
+        let mode: "pending" | "tunnel" | "page" = "pending";
+        let completedDelta = 0;
+        let lastForwarded = 0;
+
+        const onTouchStart = (e: TouchEvent) => {
+            const t = e.touches[0];
+            if (!t) return;
+            startX = t.clientX;
+            startY = t.clientY;
+            startProgress = rawProgress.get();
+            mode = "pending";
+            completedDelta = 0;
+            lastForwarded = 0;
+        };
+
+        const onTouchMove = (e: TouchEvent) => {
+            const t = e.touches[0];
+            if (!t || mode === "page") return;
+
+            const dx = t.clientX - startX;
+            const dy = startY - t.clientY; // finger up => advance
+
+            if (mode === "pending") {
+                // Claim the gesture only once it is clearly vertical.
+                if (Math.abs(dy) < 6 || Math.abs(dx) > Math.abs(dy)) return;
+                // At the very top the hero owns vertical swipes (advance the
+                // tunnel, or rewind it); once the page has scrolled, it owns.
+                mode = window.scrollY === 0 ? "tunnel" : "page";
+                if (mode === "page") return;
+            }
+
+            e.preventDefault();
+            const next = Math.min(1, Math.max(0, startProgress + dy * 0.0012));
+            rawProgress.set(next);
+
+            // Tunnel finished mid-swipe: hand the surplus of this very
+            // gesture to normal page scroll (no dead zone at the top).
+            if (next >= 1) {
+                if (completedDelta === 0) completedDelta = dy;
+                const surplus = dy - completedDelta;
+                window.scrollBy({ top: surplus - lastForwarded, behavior: "auto" });
+                lastForwarded = surplus;
+            }
+        };
+
+        const onEnd = () => {
+            mode = "pending";
+            completedDelta = 0;
+            lastForwarded = 0;
+        };
+
+        el.addEventListener("touchstart", onTouchStart, { passive: true });
+        el.addEventListener("touchmove", onTouchMove, { passive: false });
+        el.addEventListener("touchend", onEnd, { passive: true });
+        el.addEventListener("touchcancel", onEnd, { passive: true });
+        return () => {
+            el.removeEventListener("touchstart", onTouchStart);
+            el.removeEventListener("touchmove", onTouchMove);
+            el.removeEventListener("touchend", onEnd);
+            el.removeEventListener("touchcancel", onEnd);
+        };
+    }, [rawProgress]);
+
     const pointer = useCameraParallax(!reduce);
 
     const titleScale = useTransform(smoothProgress, [0, 0.5, 1], [0.7, 1, 1.35]);
